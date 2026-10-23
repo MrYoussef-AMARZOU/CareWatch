@@ -1,10 +1,11 @@
 // src/components/Sparkline.jsx
 export default function Sparkline({ data, color = "var(--accent)", height = 28, width = 96, fill = true }) {
-  if (!data || data.length < 2) return <svg width={width} height={height}/>;
-  const min = Math.min(...data), max = Math.max(...data);
+  const values = (data || []).filter((value) => Number.isFinite(value));
+  if (values.length < 2) return <svg width={width} height={height}/>;
+  const min = Math.min(...values), max = Math.max(...values);
   const range = max - min || 1;
-  const stepX = width / (data.length - 1);
-  const pts = data.map((v, i) => [i * stepX, height - ((v - min) / range) * (height - 4) - 2]);
+  const stepX = width / (values.length - 1);
+  const pts = values.map((v, i) => [i * stepX, height - ((v - min) / range) * (height - 4) - 2]);
   const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
   const area = path + ` L ${width} ${height} L 0 ${height} Z`;
   const id = "spk-" + Math.random().toString(36).slice(2, 7);

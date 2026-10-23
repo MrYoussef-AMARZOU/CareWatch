@@ -6,7 +6,7 @@
 
 import { PoseLandmarker, HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
-const WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
+const WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
 const POSE_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 const HANDS_URL =
@@ -21,17 +21,31 @@ export async function initBodyLandmarkers() {
   if (initPromise) return initPromise;
   initPromise = (async () => {
     const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+    const create = async (Factory, options) => {
+      try {
+        return await Factory.createFromOptions(vision, {
+          ...options,
+          baseOptions: { ...options.baseOptions, delegate: "GPU" }
+        });
+      } catch (gpuError) {
+        console.warn("MediaPipe GPU delegate unavailable; using CPU", gpuError);
+        return Factory.createFromOptions(vision, {
+          ...options,
+          baseOptions: { ...options.baseOptions, delegate: "CPU" }
+        });
+      }
+    };
     const [p, h] = await Promise.all([
-      PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: POSE_URL, delegate: "GPU" },
+      create(PoseLandmarker, {
+        baseOptions: { modelAssetPath: POSE_URL },
         runningMode: "VIDEO",
         numPoses: 1,
         minPoseDetectionConfidence: 0.5,
         minPosePresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
       }),
-      HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: HANDS_URL, delegate: "GPU" },
+      create(HandLandmarker, {
+        baseOptions: { modelAssetPath: HANDS_URL },
         runningMode: "VIDEO",
         numHands: 2,
         minHandDetectionConfidence: 0.5,

@@ -63,7 +63,7 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
 
   const [metrics, setMetrics] = useState({
     heartRate: 0,
-    oxygen: 0,            // RGB-only SpO₂ — flagged as estimate
+    oxygen: null,         // A webcam cannot provide clinically valid SpO₂.
     arousal: 0,           // from HRV RMSSD
     drowsiness: 0,        // from PERCLOS
     blinkRate: 0,         // blinks/min
@@ -123,16 +123,29 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
 
   /* ─── Start / Stop ─── */
   const startSession = useCallback(async () => {
+    let stream;
     try {
-      const sid = await apiStartSession(/Mobi/.test(navigator.userAgent) ? "mobile" : "pc", FS);
-      setSessId(sid);
-      const stream = await navigator.mediaDevices.getUserMedia({
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error(tRef.current("dash.cameraUnsupported"));
+      }
+      stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user", frameRate: { ideal: 30 } }
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      let sid = `local-${Date.now().toString(36)}`;
+      try {
+        const remoteSid = await apiStartSession(/Mobi/.test(navigator.userAgent) ? "mobile" : "pc", FS);
+        if (remoteSid) {
+          sid = remoteSid;
+          setBackendOk(true);
+        }
+      } catch {
+        setBackendOk(false);
+      }
+      setSessId(sid);
       rgbBuf.current = { r: [], g: [], b: [], t: [] };
       ppgBuf.current = [];
       perclos.current.reset();
@@ -151,13 +164,14 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
       gestureRef.current = { palm: false, grimace: false };
       setRunning(true);
     } catch (err) {
+      stream?.getTracks().forEach((track) => track.stop());
       alert(tRef.current("dash.startErr") + (err.response?.data?.error || err.message || err));
     }
   }, []);
 
   const stopSession = useCallback(async () => {
     videoRef.current?.srcObject?.getTracks().forEach((t) => t.stop());
-    if (sessId) await apiEndSession(sessId);
+    if (sessId && !sessId.startsWith("local-")) await apiEndSession(sessId);
     setRunning(false); setSessId(null);
   }, [sessId]);
 
@@ -192,9 +206,9 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
         if (open) {
           palmHold.current++;
           palmC.current = palmCenter(open);
-          // 🚨 Geste d'urgence : paume ouverte levée maintenue (~0,3 s),
+          // 🚨 Geste d'urgence : paume ouverte levée maintenue (~0,7 s),
           //    cooldown 30 s entre deux déclenchements.
-          if (palmHold.current >= 4 && tMs - emergencyAt.current > EMERGENCY_COOLDOWN_MS) {
+          if (palmHold.current >= 10 && tMs - emergencyAt.current > EMERGENCY_COOLDOWN_MS) {
             emergencyAt.current = tMs;
             setEmergency(true);
             setTimeout(() => setEmergency(false), EMERGENCY_SHOW_MS);
@@ -267,10 +281,9 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
         const hr = hrRes ? hrRes.hr : 0;
         const confidence = hrRes ? hrRes.confidence : 0;
 
-        // ─── 2. SpO₂ estimate (RGB-only, low confidence) ───
-        const mR = rgbBuf.current.r.reduce((a, b) => a + b, 0) / rgbBuf.current.r.length;
-        const mG = rgbBuf.current.g.reduce((a, b) => a + b, 0) / rgbBuf.current.g.length;
-        const oxygen = clamp(88 + (mG - mR + 50) / 5, 88, 100);
+        // A regular RGB webcam cannot measure SpO₂ reliably. Do not fabricate
+        // a percentage from channel brightness; use a pulse oximeter instead.
+        const oxygen = null;
 
         // ─── 3. PERCLOS → drowsiness % ───
         const p = perclos.current.perclos();
@@ -304,7 +317,7 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
           const next = {
             ...prev,
             heartRate: hr || prev.heartRate,
-            oxygen: Math.round(oxygen),
+            oxygen,
             drowsiness,
             blinkRate: Math.round(blinkRate),
             yawnLevel,
@@ -326,11 +339,14 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
         });
 
         // ─── 5. Save to backend ───
-        apiSaveMetrics(sessId, {
-          heartRate: hr, oxygen, drowsiness, arousal: hrvMetrics?.arousal,
-          rmssd: hrvMetrics?.rmssd, sdnn: hrvMetrics?.sdnn, lfhf: hrvMetrics?.lfhf,
-          blinkRate, yawnLevel, brightness, confidence
-        });
+        const remoteSession = backendOk && sessId && !sessId.startsWith("local-");
+        if (remoteSession) {
+          apiSaveMetrics(sessId, {
+            heartRate: hr, oxygen, drowsiness, arousal: hrvMetrics?.arousal,
+            rmssd: hrvMetrics?.rmssd, sdnn: hrvMetrics?.sdnn, lfhf: hrvMetrics?.lfhf,
+            blinkRate, yawnLevel, brightness, confidence
+          });
+        }
 
         // ─── 6. Alerts ───
         const triggers = [];
@@ -339,7 +355,9 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
         if (drowsiness > 60) triggers.push({ type: "fatigue",   severity: "high",     label: tRef.current("alerts.lbl.drowsy") });
         if (drowsiness > 80) triggers.push({ type: "fatigue",   severity: "critical", label: tRef.current("alerts.lbl.criticalDrowsy") });
         if (hrvMetrics?.arousal > 75) triggers.push({ type: "stress", severity: "high", label: tRef.current("alerts.lbl.arousal") });
-        if (oxygen < 92)     triggers.push({ type: "oxygen",    severity: "critical", label: tRef.current("alerts.lbl.lowSpo2") });
+        if (oxygen != null && oxygen < 92) {
+          triggers.push({ type: "oxygen", severity: "critical", label: tRef.current("alerts.lbl.lowSpo2") });
+        }
         // Geste d'urgence : paume ouverte levée vers la caméra
         if (tMs - emergencyAt.current < EMERGENCY_SHOW_MS)
           triggers.push({ type: "emergency", severity: "critical", label: tRef.current("alerts.lbl.emergency") });
@@ -357,7 +375,9 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
           const last = alertPostAt.current[tr.type] || 0;
           if (now - last < ALERT_POST_MS) return;
           alertPostAt.current[tr.type] = now;
-          apiSaveAlert(sessId, { type: tr.type, severity: tr.severity, message: tr.label }, notify);
+          if (remoteSession) {
+            apiSaveAlert(sessId, { type: tr.type, severity: tr.severity, message: tr.label }, notify);
+          }
         });
         setAlerts(triggers);
       }
@@ -421,7 +441,7 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
     const drowsyPen = metrics.drowsiness * 0.3;
     let base = 100 - arousalPen - drowsyPen;
     if (metrics.heartRate > 100) base -= (metrics.heartRate - 100) * 0.5;
-    if (metrics.oxygen > 0 && metrics.oxygen < 95) base -= (95 - metrics.oxygen) * 1.5;
+    if (metrics.oxygen != null && metrics.oxygen < 95) base -= (95 - metrics.oxygen) * 1.5;
     return Math.round(clamp(base, 0, 100));
   }, [metrics]);
 

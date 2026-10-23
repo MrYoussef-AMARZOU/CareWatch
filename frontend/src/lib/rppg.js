@@ -14,17 +14,20 @@ const POS_WIN_SEC = 1.6;     // POS overlapping window (Wang 2017)
    Output:  ppg — 1-D pulse signal
 */
 export function posSignal(rArr, gArr, bArr, fs = FS) {
-  const N = rArr.length;
+  const N = Math.min(rArr.length, gArr.length, bArr.length);
   const winN = Math.round(POS_WIN_SEC * fs);
   const H = new Float32Array(N);
+  const weights = new Float32Array(N);
+  if (N < winN) return H;
 
-  for (let n = winN; n < N; n++) {
-    const s = n - winN;
+  for (let s = 0; s <= N - winN; s++) {
     // Temporal normalization per channel
     let mR = 0, mG = 0, mB = 0;
-    for (let i = s; i < n; i++) { mR += rArr[i]; mG += gArr[i]; mB += bArr[i]; }
+    for (let i = s; i < s + winN; i++) {
+      mR += rArr[i]; mG += gArr[i]; mB += bArr[i];
+    }
     mR /= winN; mG /= winN; mB /= winN;
-    if (mR === 0 || mG === 0 || mB === 0) continue;
+    if (![mR, mG, mB].every(Number.isFinite) || mR <= 0 || mG <= 0 || mB <= 0) continue;
 
     // POS projection: X = R/μR - G/μG,  Y = R/μR + G/μG - 2·B/μB
     const X = new Float32Array(winN);
@@ -37,17 +40,27 @@ export function posSignal(rArr, gArr, bArr, fs = FS) {
       Y[i] = rN + gN - 2 * bN;
     }
     // Tuning factor α = σ(X) / σ(Y)
-    const stdX = std(X), stdY = std(Y) || 1e-6;
+    const stdX = std(X), stdY = std(Y);
+    if (!Number.isFinite(stdX) || !Number.isFinite(stdY) || stdY < 1e-6) continue;
     const alpha = stdX / stdY;
     // Overlap-add the windowed signal
     for (let i = 0; i < winN; i++) {
       H[s + i] += X[i] - alpha * Y[i];
+      weights[s + i]++;
     }
+  }
+  for (let i = 0; i < N; i++) {
+    if (weights[i] > 0) H[i] /= weights[i];
   }
   return H;
 }
 
-function mean(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s / a.length; }
+function mean(a) {
+  if (!a.length) return 0;
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i];
+  return s / a.length;
+}
 function std(a)  { const m = mean(a); let s = 0; for (let i = 0; i < a.length; i++) s += (a[i] - m) ** 2; return Math.sqrt(s / a.length); }
 
 /* ─── 2. Butterworth-like bandpass via 2nd-order IIR cascade ───
@@ -55,6 +68,7 @@ function std(a)  { const m = mean(a); let s = 0; for (let i = 0; i < a.length; i
    biquad with cosine windowed coefficients — good enough for HR.
 */
 export function bandpass(signal, fs = FS, low = HR_MIN, high = HR_MAX) {
+  if (!signal?.length) return new Float32Array();
   // Detrend first
   const m = mean(signal);
   const detrended = signal.map((v) => v - m);
@@ -76,10 +90,12 @@ export function bandpass(signal, fs = FS, low = HR_MIN, high = HR_MAX) {
    We don't need a full FFT — just scan 0.7–4 Hz at ~0.05 Hz steps (~67 bins).
 */
 export function estimateHR(signal, fs = FS) {
-  if (signal.length < fs * 4) return null;
+  if (!signal?.length || signal.length < fs * 4) return null;
   const N = signal.length;
   const dHz = 0.05;
   let bestF = 0, bestMag = -1;
+  let totalPower = 0;
+  for (let n = 0; n < N; n++) totalPower += signal[n] * signal[n];
   for (let f = HR_MIN; f <= HR_MAX; f += dHz) {
     let re = 0, im = 0;
     const w = 2 * Math.PI * f / fs;
@@ -90,7 +106,10 @@ export function estimateHR(signal, fs = FS) {
     const mag = re * re + im * im;
     if (mag > bestMag) { bestMag = mag; bestF = f; }
   }
-  return { hr: Math.round(bestF * 60), powerHz: bestF, confidence: 0.85 };
+  if (!bestF || totalPower <= 1e-8) return null;
+  // A narrow spectral peak is more trustworthy than a flat/noisy spectrum.
+  const confidence = Math.max(0, Math.min(1, (bestMag / totalPower) * N * 2.5));
+  return { hr: Math.round(bestF * 60), powerHz: bestF, confidence };
 }
 
 /* ─── 4. R-peak (beat) detector for HRV ───
@@ -98,6 +117,7 @@ export function estimateHR(signal, fs = FS) {
    intervals in ms — suitable for sending to neurokit2 backend.
 */
 export function detectPeaks(signal, fs = FS) {
+  if (!signal?.length) return { peaks: [], ibi: [] };
   const peaks = [];
   const minDist = Math.round(fs * 0.35);            // 350 ms min between beats (~170 BPM ceiling)
   const m = mean(signal);

@@ -466,7 +466,15 @@ app.post('/api/alerts/save', async (req, res) => {
     const { type: rawType, severity, message, threshold_exceeded, channels } = alert;
     // Normalisation du vocabulaire client vers l'énumération de la base
     // (le frontend émet heartRate / oxygen, la table impose heart_rate / spo2).
-    const TYPE_MAP = { heartRate: 'heart_rate', heart_rate: 'heart_rate', oxygen: 'spo2', spo2: 'spo2' };
+    const TYPE_MAP = {
+      heartRate: 'heart_rate',
+      heart_rate: 'heart_rate',
+      oxygen: 'spo2',
+      spo2: 'spo2',
+      // Facial pain/grimace is persisted as a stress alert because older
+      // databases only allow the stable alert vocabulary above.
+      grimace: 'stress'
+    };
     const type = TYPE_MAP[rawType] || rawType;
     const id = uid();
     await run(
