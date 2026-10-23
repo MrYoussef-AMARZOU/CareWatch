@@ -78,6 +78,29 @@ Variables du backend : `NOVU_API_URL`, `NOVU_API_KEY`, `NOVU_WORKFLOW`,
 `NOVU_SUBSCRIBER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Sans clés,
 l'application reste utilisable et les alertes sont uniquement locales.
 
+### Sélectionner iVCam ou une autre caméra
+
+Le frontend utilise `navigator.mediaDevices.getUserMedia`. Pour sélectionner
+une caméra précise, copiez `frontend/.env.example` vers `frontend/.env.local`
+et définissez l'une des variables Vite suivantes (elles sont prises en compte
+au prochain démarrage ou build) :
+
+```dotenv
+# Recommandé : recherche insensible à la casse, exacte puis partielle
+VITE_CAMERA_NAME=e2eSoft iVCam
+
+# Alternative : index dans la liste des périphériques vidéo (souvent 1 ou 2
+# pour iVCam, au lieu de 0 pour la webcam intégrée)
+VITE_CAMERA_INDEX=1
+```
+
+Si les deux variables sont renseignées, `VITE_CAMERA_NAME` est prioritaire.
+L'index est compté uniquement parmi les périphériques vidéo et commence à
+`0`. Le navigateur peut demander l'autorisation une première fois afin de
+révéler les noms des périphériques. Une caméra configurée mais introuvable
+provoque une erreur explicite au démarrage au lieu de basculer silencieusement
+sur une autre caméra.
+
 ## Documentation
 
 - [Guide utilisateur](docs/GUIDE_UTILISATEUR.md) — prise en main, lecture des

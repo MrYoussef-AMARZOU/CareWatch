@@ -64,6 +64,42 @@ export function palmCenter(hand) {
   return { x: x / ids.length, y: y / ids.length };
 }
 
+/* ─── Posture de chute ────────────────────────────────────────────────────
+   Heuristique volontairement conservative : on exige un corps suffisamment
+   visible et une posture devenue horizontale (ou un torse fortement incliné).
+   La confirmation temporelle et le cooldown sont gérés par Dashboard. */
+export function fallFeatures(pose) {
+  if (!pose || pose.length < 33) return null;
+  if ([11, 12, 23, 24].some((id) => !pose[id])) return null;
+  const ids = [11, 12, 23, 24, 25, 26, 27, 28];
+  const points = ids.map((id) => pose[id]).filter(Boolean);
+  const visible = points.filter((p) => p.visibility == null || p.visibility >= 0.45);
+  if (visible.length < 6) return null;
+
+  const shoulder = {
+    x: (pose[11].x + pose[12].x) / 2,
+    y: (pose[11].y + pose[12].y) / 2
+  };
+  const hip = {
+    x: (pose[23].x + pose[24].x) / 2,
+    y: (pose[23].y + pose[24].y) / 2
+  };
+  const xs = visible.map((p) => p.x);
+  const ys = visible.map((p) => p.y);
+  const bodyWidth = Math.max(...xs) - Math.min(...xs);
+  const bodyHeight = Math.max(...ys) - Math.min(...ys);
+  const torsoAngle = Math.atan2(Math.abs(shoulder.x - hip.x), Math.abs(shoulder.y - hip.y))
+    * 180 / Math.PI;
+  const horizontal = bodyWidth > Math.max(0.35, bodyHeight * 0.95);
+
+  return {
+    candidate: torsoAngle >= 58 || horizontal,
+    torsoAngle,
+    bodyWidth,
+    bodyHeight
+  };
+}
+
 /* ─── Grimace (expression de douleur) ─────────────────────────────────────
    Trois signaux extraits du maillage facial, normalisés par la largeur du
    visage (invariant à la distance caméra) :

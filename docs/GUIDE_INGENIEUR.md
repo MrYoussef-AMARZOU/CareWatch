@@ -8,6 +8,13 @@ traitement du signal et le développement web.
 CareWatch est un prototype de recherche. Il n'est pas certifié comme
 dispositif médical et ne doit pas être utilisé pour un diagnostic.
 
+La source vidéo est sélectionnée dans le navigateur par
+`frontend/src/lib/camera.js`. Sans configuration, CareWatch conserve la
+sélection par défaut du navigateur. Pour forcer une caméra virtuelle comme
+iVCam, définir `VITE_CAMERA_NAME` (par exemple `e2eSoft iVCam`) ou
+`VITE_CAMERA_INDEX` (souvent `1` ou `2`) dans `frontend/.env.local`. Le nom est
+prioritaire si les deux variables existent.
+
 ## 1. Périmètre
 
 | Domaine | Mesure | Statut |

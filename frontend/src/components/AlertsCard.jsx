@@ -10,6 +10,8 @@ const REC = {
   oxygen: "rec.oxygen",
   heartRate: "rec.heartRate",
   emergency: "rec.emergency",
+  fall: "rec.fall",
+  yawn: "rec.yawn",
   grimace: "rec.grimace",
 };
 

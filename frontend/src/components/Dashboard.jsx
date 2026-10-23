@@ -31,9 +31,10 @@ import {
 import { posSignal, bandpass, estimateHR, detectPeaks, estimateFps, estimateSpO2 } from "../lib/rppg";
 import { initFaceLandmarker, detect, sampleSkinROI, ear, mar, PerclosBuffer } from "../lib/face";
 import { initBodyLandmarkers, detectPose, detectHands, drawOverlay } from "../lib/body";
-import { isOpenPalm, palmCenter, GrimaceTracker } from "../lib/gestures";
+import { isOpenPalm, palmCenter, fallFeatures, GrimaceTracker } from "../lib/gestures";
 import { initAlarm, playEmergencyAlarm } from "../lib/alarm";
 import { computeHRV, localHRV } from "../lib/hrv";
+import { getCameraStream } from "../lib/camera";
 import { useT } from "../i18n.jsx";
 
 const FS = 30;                  // expected sample rate
@@ -46,6 +47,8 @@ const EMERGENCY_COOLDOWN_MS = 30000; // cooldown du geste d'urgence
 const EMERGENCY_SHOW_MS = 10000;     // durée d'affichage de la bannière
 const PALM_HOLD_MS = 450;            // maintien requis de la paume ouverte
 const PALM_GRACE_MS = 350;           // tolérance entre deux détections
+const FALL_HOLD_MS = 650;            // confirmation d'une posture de chute
+const FALL_COOLDOWN_MS = 30000;
 const ALERT_POST_MS = 15000;         // anti-spam envoi alerte Novu/Telegram
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -108,8 +111,12 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
   const palmSince = useRef(null);        // début du maintien de la paume
   const palmSeenAt = useRef(-Infinity);  // dernière détection de paume
   const emergencyAt = useRef(-Infinity); // timestamp du dernier déclenchement
+  const fallSince = useRef(null);
+  const fallAt = useRef(-Infinity);
   const yawnLevel = useRef(0);           // niveau de bâillement lissé (0..100)
   const yawnBase = useRef(null);         // ouverture de bouche au repos (adaptatif)
+  const yawnHold = useRef(0);
+  const yawnActive = useRef(false);
   const grimaceTrk = useRef(new GrimaceTracker());
   const gestureRef = useRef({ palm: false, grimace: false });
   const alertPostAt = useRef({});        // anti-spam Novu/Telegram par type
@@ -156,9 +163,7 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
       // Débloque l'audio d'urgence sur ce geste utilisateur (politique mobile).
       initAlarm();
       // La caméra s'ouvre immédiatement : l'API ne doit jamais la bloquer.
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user", frameRate: { ideal: 30 } }
-      });
+      const stream = await getCameraStream();
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -174,8 +179,12 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
       palmC.current = null;
       palmSince.current = null;
       palmSeenAt.current = -Infinity;
+      fallSince.current = null;
+      fallAt.current = -Infinity;
       yawnLevel.current = 0;
       yawnBase.current = null;
+      yawnHold.current = 0;
+      yawnActive.current = false;
       lastPoseAt.current = 0;
       lastHandsAt.current = 0;
       grimaceTrk.current.reset();
@@ -224,7 +233,38 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
       if (bodyReady && tMs - lastPoseAt.current > POSE_MS) {
         lastPoseAt.current = tMs;
         const p = detectPose(v, tMs);
-        if (p) poseBuf.current = { lm: p, at: tMs };
+        if (p) {
+          poseBuf.current = { lm: p, at: tMs };
+          const fall = fallFeatures(p);
+          if (fall?.candidate) {
+            if (fallSince.current == null) fallSince.current = tMs;
+            if (tMs - fallSince.current >= FALL_HOLD_MS &&
+                tMs - fallAt.current >= FALL_COOLDOWN_MS) {
+              fallAt.current = tMs;
+              fallSince.current = null;
+              setEmergency(true);
+              setTimeout(() => setEmergency(false), EMERGENCY_SHOW_MS);
+              playEmergencyAlarm();
+
+              const contact = medData?.contact || "";
+              const notify = {
+                subscriberId: "carewatch-user",
+                ...(contact.includes("@") ? { email: contact } : {}),
+                ...(contact && !contact.includes("@") ? { telegram: contact } : {}),
+              };
+              alertPostAt.current.fall = Date.now();
+              recordAlert("fall");
+              apiSaveAlert(sessId, {
+                type: "fall", severity: "critical",
+                message: tRef.current("alerts.lbl.fall"),
+              }, notify);
+            }
+          } else {
+            fallSince.current = null;
+          }
+        } else {
+          fallSince.current = null;
+        }
       }
       if (bodyReady && tMs - lastHandsAt.current > HANDS_MS) {
         lastHandsAt.current = tMs;
@@ -321,12 +361,20 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
       // le visage est détecté mais que le signal cardiaque est encore court.
       if (marVal != null) {
         const base = yawnBase.current ?? marVal;
-        const floor = Math.max(0.09, base * 1.25);   // ouverture de repos
-        const raw = clamp(((marVal - floor) / 0.36) * 100, 0, 100);
+        const floor = Math.max(0.10, base * 1.15);   // ouverture de repos
+        const raw = clamp(((marVal - floor) / 0.28) * 100, 0, 100);
         yawnLevel.current = yawnLevel.current * 0.75 + raw * 0.25;
         if (raw < 25) yawnBase.current = base * 0.98 + marVal * 0.02;
+        if (raw >= 55) {
+          yawnHold.current = Math.min(30, yawnHold.current + 1);
+        } else if (raw < 30) {
+          yawnHold.current = Math.max(0, yawnHold.current - 2);
+        }
+        yawnActive.current = yawnHold.current >= 8;
       } else {
         yawnLevel.current *= 0.92;
+        yawnHold.current = Math.max(0, yawnHold.current - 1);
+        yawnActive.current = yawnHold.current >= 8;
       }
 
       // PERCLOS
@@ -447,6 +495,10 @@ export default function Dashboard({ medData, onMedUpdate, onReset }) {
         if (hrvMetrics?.arousal > 75) triggers.push({ type: "stress", severity: "high", label: tRef.current("alerts.lbl.arousal") });
         if (oxygen > 0 && oxygen < 92 && oxygenConf > 0.5)
           triggers.push({ type: "oxygen", severity: "critical", label: tRef.current("alerts.lbl.lowSpo2") });
+        if (yawnActive.current)
+          triggers.push({ type: "yawn", severity: "high", label: tRef.current("alerts.lbl.yawn") });
+        if (now - fallAt.current < EMERGENCY_SHOW_MS)
+          triggers.push({ type: "fall", severity: "critical", label: tRef.current("alerts.lbl.fall") });
         // Geste d'urgence : paume ouverte levée vers la caméra
         if (tMs - emergencyAt.current < EMERGENCY_SHOW_MS)
           triggers.push({ type: "emergency", severity: "critical", label: tRef.current("alerts.lbl.emergency") });
