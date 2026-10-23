@@ -12,22 +12,38 @@ let initPromise = null;
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const WASM_URL =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
 
 export async function initFaceLandmarker() {
   if (landmarker) return landmarker;
   if (initPromise) return initPromise;
   initPromise = (async () => {
     const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-    landmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+    const options = {
+      baseOptions: { modelAssetPath: MODEL_URL },
       runningMode: "VIDEO",
       numFaces: 1,
       outputFaceBlendshapes: false,
       outputFacialTransformationMatrixes: false,
-    });
+    };
+    try {
+      landmarker = await FaceLandmarker.createFromOptions(vision, {
+        ...options,
+        baseOptions: { ...options.baseOptions, delegate: "GPU" }
+      });
+    } catch (gpuError) {
+      console.warn("MediaPipe FaceLandmarker GPU delegate unavailable; using CPU", gpuError);
+      landmarker = await FaceLandmarker.createFromOptions(vision, {
+        ...options,
+        baseOptions: { ...options.baseOptions, delegate: "CPU" }
+      });
+    }
     return landmarker;
-  })();
+  })().catch((error) => {
+    initPromise = null;
+    landmarker = null;
+    throw error;
+  });
   return initPromise;
 }
 
@@ -72,6 +88,7 @@ export function sampleSkinROI(landmarks, ctx, w, h) {
   const patchSize = 8; // half-side in pixels
   for (const idx of SKIN_ROI) {
     const lm = landmarks[idx];
+    if (!lm || !Number.isFinite(lm.x) || !Number.isFinite(lm.y)) continue;
     const cx = Math.round(lm.x * w);
     const cy = Math.round(lm.y * h);
     const x0 = Math.max(0, cx - patchSize);

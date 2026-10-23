@@ -148,12 +148,12 @@ All analysis runs **client-side in the browser** using pure JavaScript — no ex
 
 | Metric | Method | Formula |
 |--------|--------|---------|
-| **Heart Rate** | rPPG (green channel peak detection) | HR = peaks × 12 (5s buffer) |
+| **Heart Rate** | Face-landmark skin ROI + POS rPPG | POS projection → band-pass → frequency peak (4–10s buffer) |
 | **Stress** | Frame-to-frame motion analysis | stress = avgMotion × 3.5 + HR factor |
 | **Fatigue** | Facial brightness analysis | fatigue = max(0, 100 - brightness × 0.35) |
 | **Anxiety** | Stress derivative | anxiety = stress × 0.7 + random(0-5) |
 | **Burnout** | Stress + fatigue composite | burnout = stress × 0.5 + fatigue × 0.5 |
-| **SpO₂** | Red/green channel ratio | SpO₂ = 88 + (green - red + 50) / 5 |
+| **SpO₂** | Not measured by the RGB webcam | Use a validated pulse oximeter; no fabricated webcam percentage is shown |
 
 **Scientific basis:** IEEE Trans. Biomedical Engineering (2019), Maslach Burnout Inventory
 
@@ -301,8 +301,12 @@ The frontend is automatically deployed on every push to `main`:
 
 Works on **desktop and phone** (HTTPS required for camera access — GitHub Pages provides it).
 On the hosted demo, backend features (SQLite history, Novu, Telegram) are disabled —
-the app runs in **offline demo mode**: onboarding chat, webcam rPPG, metrics,
-HRV (local fallback), alerts, trilingual UI and both themes all work in the browser.
+the app runs in **offline analysis mode**: webcam rPPG, MediaPipe face/body/hand tracking,
+HRV (local fallback), local alerts, trilingual UI and both themes all work in the browser.
+The browser implementation uses the deployable, unsupervised POS pipeline from the
+rPPG-Toolbox family; the neural models from `open-rppg` and `nasir6/rPPG` require
+Python/JAX or CUDA/PyTorch runtimes and pretrained weights, so they are not silently
+represented as a fake client-side model.
 
 **Skeleton & gestures** (camera session required):
 
